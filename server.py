@@ -1,3 +1,13 @@
+from flask import Flask, request, jsonify
+import time
+import requests
+import os
+
+app = Flask(__name__)
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID", "")
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -82,3 +92,7 @@ def chat():
                 response_text = content[0]
 
     return jsonify({"response": response_text, "thread_id": thread_id})
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
