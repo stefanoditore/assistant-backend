@@ -101,7 +101,8 @@ def speak():
     text = data.get("message", "")
     voice_id = ELEVENLABS_VOICE_ID
     api_key = ELEVENLABS_API_KEY
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    # *** Output audio compatibile Unity ***
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_44100"
     headers = {
         "xi-api-key": api_key,
         "Content-Type": "application/json"
