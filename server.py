@@ -21,7 +21,6 @@ def chat():
     temperature = data.get("temperature", 0.7)
     top_p = data.get("top_p", 1.0)
 
-    # *** MODIFICA: gestione thread_id ***
     thread_id = data.get("thread_id")
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -29,17 +28,18 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # Se non riceviamo thread_id, creiamo un nuovo thread (prima richiesta della chat)
+    # 1. Crea un nuovo thread se non c'è thread_id
     if not thread_id:
         thread_resp = requests.post(
             "https://api.openai.com/v1/threads",
             headers=headers,
             json={}
         )
+        thread_resp.raise_for_status()
         thread_id = thread_resp.json().get("id")
 
-    # Aggiungi messaggio utente
-    requests.post(
+    # 2. Aggiungi messaggio utente
+    msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
         json={
@@ -47,8 +47,9 @@ def chat():
             "content": user_message
         }
     )
+    msg_resp.raise_for_status()
 
-    # Avvia run
+    # 3. Avvia una run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -59,43 +60,47 @@ def chat():
             "top_p": top_p
         }
     )
+    run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # Polling: attende completamento run
+    # 4. Attendi che la run sia completata
     status = ""
-    while status != "completed":
+    for _ in range(60):  # max 60 secondi
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
         )
+        status_resp.raise_for_status()
         status = status_resp.json().get("status")
         if status == "completed":
             break
         time.sleep(1)
+    else:
+        return jsonify({"error": "Timeout during run"}), 500
 
-    # Recupera risposta assistant
+    # 5. Recupera l’ULTIMA risposta dell’assistente
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
     )
+    messages_resp.raise_for_status()
     messages = messages_resp.json().get("data", [])
     response_text = ""
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant":
-            content = msg.get("content", [])
-            if content and isinstance(content, list):
-                if isinstance(content[0], dict):
-                    response_text = content[0].get("text", "")
-                    if isinstance(response_text, dict):
-                        response_text = response_text.get("value", "")
-                else:
-                    response_text = content[0]
-            break
+    # Prendi sempre l’ULTIMO messaggio assistant!
+    assistant_msgs = [msg for msg in messages if msg.get("role") == "assistant"]
+    if assistant_msgs:
+        last_assistant = assistant_msgs[-1]
+        content = last_assistant.get("content", [])
+        if content and isinstance(content, list):
+            if isinstance(content[0], dict):
+                response_text = content[0].get("text", "")
+                if isinstance(response_text, dict):
+                    response_text = response_text.get("value", "")
+            else:
+                response_text = content[0]
 
-    # Restituisci anche il thread_id così Unity può mantenerlo
     return jsonify({"response": response_text, "thread_id": thread_id})
 
-# /speak come prima
 @app.route("/speak", methods=["POST"])
 def speak():
     data = request.json
