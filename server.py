@@ -15,7 +15,7 @@ def chat():
     system_message = data.get("system_message", "")
     temperature = data.get("temperature", 0.7)
     top_p = data.get("top_p", 1.0)
-    thread_id = data.get("thread_id")   # <-- se già presente, mantieni il contesto
+    thread_id = data.get("thread_id")
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -23,60 +23,40 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # 1. Se non ho thread_id, lo creo (prima chiamata della chat)
+    # Crea thread se non esiste
     if not thread_id:
-        thread_resp = requests.post(
-            "https://api.openai.com/v1/threads",
-            headers=headers,
-            json={}
-        )
-        thread_resp.raise_for_status()
-        thread_id = thread_resp.json().get("id")
+        resp = requests.post("https://api.openai.com/v1/threads", headers=headers)
+        resp.raise_for_status()
+        thread_id = resp.json()["id"]
 
-    # 2. Aggiungi messaggio utente (stesso thread se esiste già)
+    # Aggiungi messaggio utente
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
-        json={
-            "role": "user",
-            "content": user_message
-        }
+        json={"role": "user", "content": user_message}
     )
     msg_resp.raise_for_status()
 
-    # 3. **POLLING**: aspetta che il messaggio utente sia presente nel thread
+    # Poll per verificare presenza messaggio
     found = False
-    for attempt in range(12):  # Max 12 secondi
-        messages_check = requests.get(
-            f"https://api.openai.com/v1/threads/{thread_id}/messages",
-            headers=headers
-        )
-        messages_check.raise_for_status()
-        messages_data = messages_check.json().get("data", [])
-        for m in messages_data:
-            if m.get("role") == "user":
-                content = m.get("content", [])
-                if content and isinstance(content, list):
-                    if isinstance(content[0], dict):
-                        msg_text = content[0].get("text", "")
-                        if isinstance(msg_text, dict):
-                            msg_text = msg_text.get("value", "")
-                        if msg_text == user_message:
-                            found = True
-                            break
-                    else:
-                        if content[0] == user_message:
-                            found = True
-                            break
+    for _ in range(10):
+        messages = requests.get(f"https://api.openai.com/v1/threads/{thread_id}/messages", headers=headers).json()["data"]
+        for m in messages:
+            if m["role"] == "user":
+                content = m["content"]
+                if isinstance(content, list) and content:
+                    msg_text = content[0].get("text", {}).get("value", "")
+                    if msg_text == user_message:
+                        found = True
+                        break
         if found:
-            print(f"Messaggio utente trovato dopo {attempt+1} secondi.")
             break
         time.sleep(1)
-    else:
-        print("Timeout polling: il messaggio utente non appare nel thread.")
-        return jsonify({"error": "Timeout waiting for message delivery"}), 500
 
-    # 4. Avvia la run SOLO ora che il messaggio è presente!
+    if not found:
+        return jsonify({"error": "Message not registered in thread"}), 500
+
+    # Avvia run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -88,44 +68,34 @@ def chat():
         }
     )
     run_resp.raise_for_status()
-    run_id = run_resp.json().get("id")
+    run_id = run_resp.json()["id"]
 
-    # 5. Attendi che la run sia completata
-    status = ""
-    for _ in range(60):  # max 60 secondi
-        status_resp = requests.get(
-            f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
-            headers=headers
-        )
+    # Poll fino a completamento
+    for _ in range(60):
+        status_resp = requests.get(f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}", headers=headers)
         status_resp.raise_for_status()
-        status = status_resp.json().get("status")
-        if status == "completed":
+        if status_resp.json()["status"] == "completed":
             break
         time.sleep(1)
     else:
         return jsonify({"error": "Timeout during run"}), 500
 
-    # 6. Recupera l’ULTIMA risposta dell’assistente
-    messages_resp = requests.get(
-        f"https://api.openai.com/v1/threads/{thread_id}/messages",
-        headers=headers
-    )
-    messages_resp.raise_for_status()
-    messages = messages_resp.json().get("data", [])
+    # Recupera ultima risposta dell’assistente
+    messages = requests.get(f"https://api.openai.com/v1/threads/{thread_id}/messages", headers=headers).json()["data"]
     response_text = ""
-    assistant_msgs = [msg for msg in messages if msg.get("role") == "assistant"]
-    if assistant_msgs:
-        last_assistant = assistant_msgs[-1]
-        content = last_assistant.get("content", [])
-        if content and isinstance(content, list):
-            if isinstance(content[0], dict):
-                response_text = content[0].get("text", "")
-                if isinstance(response_text, dict):
-                    response_text = response_text.get("value", "")
-            else:
-                response_text = content[0]
+    for msg in reversed(messages):
+        if msg["role"] == "assistant":
+            content = msg["content"]
+            if isinstance(content, list) and content:
+                value = content[0].get("text", {}).get("value", "")
+                if value:
+                    response_text = value
+                    break
 
-    return jsonify({"response": response_text, "thread_id": thread_id})
+    return jsonify({
+        "response": response_text,
+        "thread_id": thread_id
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
