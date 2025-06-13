@@ -4,6 +4,7 @@ import os
 import requests
 import time
 import base64
+import random
 
 app = Flask(__name__)
 CORS(app)
@@ -49,7 +50,45 @@ def chat():
     )
     msg_resp.raise_for_status()
 
-    # 3. Avvia una run
+    # 3. ATTENDI CHE IL MESSAGGIO APPPAIA (come prima)
+    found = False
+    for _ in range(10):  # Max 10 secondi
+        messages_check = requests.get(
+            f"https://api.openai.com/v1/threads/{thread_id}/messages",
+            headers=headers
+        )
+        messages_check.raise_for_status()
+        messages_data = messages_check.json().get("data", [])
+        for m in messages_data:
+            if m.get("role") == "user":
+                content = m.get("content", [])
+                if content and isinstance(content, list):
+                    if isinstance(content[0], dict):
+                        msg_text = content[0].get("text", "")
+                        if isinstance(msg_text, dict):
+                            msg_text = msg_text.get("value", "")
+                        if msg_text == user_message:
+                            found = True
+                            break
+                    else:
+                        if content[0] == user_message:
+                            found = True
+                            break
+        if found:
+            # DEBUG: stampa tutti i messaggi utente del thread
+            print("\n---MESSAGGI UTENTE PRIMA DELLA RUN---")
+            for m in messages_data:
+                if m.get("role") == "user":
+                    print(m)
+            print("---FINE---\n")
+            # Delay extra per sicurezza
+            time.sleep(2 + random.random())
+            break
+        time.sleep(1)
+    else:
+        return jsonify({"error": "Timeout waiting for message delivery"}), 500
+
+    # 4. Avvia una run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -63,7 +102,7 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # 4. Attendi che la run sia completata
+    # 5. Attendi che la run sia completata
     status = ""
     for _ in range(60):  # max 60 secondi
         status_resp = requests.get(
@@ -78,7 +117,7 @@ def chat():
     else:
         return jsonify({"error": "Timeout during run"}), 500
 
-    # 5. Recupera l’ULTIMA risposta dell’assistente
+    # 6. Recupera l’ULTIMA risposta dell’assistente
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
