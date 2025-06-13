@@ -8,13 +8,11 @@ import base64
 app = Flask(__name__)
 CORS(app)
 
-# Recupera le chiavi dalle environment variables
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
-# --- CHAT ASSISTANT ENDPOINT ---
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -23,21 +21,24 @@ def chat():
     temperature = data.get("temperature", 0.7)
     top_p = data.get("top_p", 1.0)
 
+    # *** MODIFICA: gestione thread_id ***
+    thread_id = data.get("thread_id")
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # 1. Crea thread
-    thread_resp = requests.post(
-        "https://api.openai.com/v1/threads",
-        headers=headers,
-        json={}
-    )
-    thread_id = thread_resp.json().get("id")
+    # Se non riceviamo thread_id, creiamo un nuovo thread (prima richiesta della chat)
+    if not thread_id:
+        thread_resp = requests.post(
+            "https://api.openai.com/v1/threads",
+            headers=headers,
+            json={}
+        )
+        thread_id = thread_resp.json().get("id")
 
-    # 2. Aggiungi messaggio utente
+    # Aggiungi messaggio utente
     requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
@@ -47,7 +48,7 @@ def chat():
         }
     )
 
-    # 3. Avvia run
+    # Avvia run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -60,7 +61,7 @@ def chat():
     )
     run_id = run_resp.json().get("id")
 
-    # 4. Polling: attende completamento run
+    # Polling: attende completamento run
     status = ""
     while status != "completed":
         status_resp = requests.get(
@@ -72,7 +73,7 @@ def chat():
             break
         time.sleep(1)
 
-    # 5. Recupera risposta assistant
+    # Recupera risposta assistant
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
@@ -83,7 +84,6 @@ def chat():
         if msg.get("role") == "assistant":
             content = msg.get("content", [])
             if content and isinstance(content, list):
-                # Gestione caso OpenAI v2 (["text"]["value"])
                 if isinstance(content[0], dict):
                     response_text = content[0].get("text", "")
                     if isinstance(response_text, dict):
@@ -92,16 +92,16 @@ def chat():
                     response_text = content[0]
             break
 
-    return jsonify({"response": response_text})
+    # Restituisci anche il thread_id così Unity può mantenerlo
+    return jsonify({"response": response_text, "thread_id": thread_id})
 
-# --- ELEVENLABS TTS ENDPOINT ---
+# /speak come prima
 @app.route("/speak", methods=["POST"])
 def speak():
     data = request.json
     text = data.get("message", "")
     voice_id = ELEVENLABS_VOICE_ID
     api_key = ELEVENLABS_API_KEY
-    # *** Output audio compatibile Unity ***
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_44100"
     headers = {
         "xi-api-key": api_key,
