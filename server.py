@@ -15,6 +15,7 @@ def chat():
     system_message = data.get("system_message", "")
     temperature = data.get("temperature", 0.7)
     top_p = data.get("top_p", 1.0)
+    thread_id = data.get("thread_id")   # <-- se già presente, mantieni il contesto
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -22,16 +23,17 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # 1. SEMPRE crea nuovo thread!
-    thread_resp = requests.post(
-        "https://api.openai.com/v1/threads",
-        headers=headers,
-        json={}
-    )
-    thread_resp.raise_for_status()
-    thread_id = thread_resp.json().get("id")
+    # 1. Se non ho thread_id, lo creo (prima chiamata della chat)
+    if not thread_id:
+        thread_resp = requests.post(
+            "https://api.openai.com/v1/threads",
+            headers=headers,
+            json={}
+        )
+        thread_resp.raise_for_status()
+        thread_id = thread_resp.json().get("id")
 
-    # 2. Aggiungi messaggio utente
+    # 2. Aggiungi messaggio utente (stesso thread se esiste già)
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
@@ -42,7 +44,39 @@ def chat():
     )
     msg_resp.raise_for_status()
 
-    # 3. Avvia una run
+    # 3. **POLLING**: aspetta che il messaggio utente sia presente nel thread
+    found = False
+    for attempt in range(12):  # Max 12 secondi
+        messages_check = requests.get(
+            f"https://api.openai.com/v1/threads/{thread_id}/messages",
+            headers=headers
+        )
+        messages_check.raise_for_status()
+        messages_data = messages_check.json().get("data", [])
+        for m in messages_data:
+            if m.get("role") == "user":
+                content = m.get("content", [])
+                if content and isinstance(content, list):
+                    if isinstance(content[0], dict):
+                        msg_text = content[0].get("text", "")
+                        if isinstance(msg_text, dict):
+                            msg_text = msg_text.get("value", "")
+                        if msg_text == user_message:
+                            found = True
+                            break
+                    else:
+                        if content[0] == user_message:
+                            found = True
+                            break
+        if found:
+            print(f"Messaggio utente trovato dopo {attempt+1} secondi.")
+            break
+        time.sleep(1)
+    else:
+        print("Timeout polling: il messaggio utente non appare nel thread.")
+        return jsonify({"error": "Timeout waiting for message delivery"}), 500
+
+    # 4. Avvia la run SOLO ora che il messaggio è presente!
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -56,9 +90,9 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # 4. Attendi che la run sia completata
+    # 5. Attendi che la run sia completata
     status = ""
-    for _ in range(60):
+    for _ in range(60):  # max 60 secondi
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
@@ -71,7 +105,7 @@ def chat():
     else:
         return jsonify({"error": "Timeout during run"}), 500
 
-    # 5. Recupera l’ULTIMA risposta dell’assistente
+    # 6. Recupera l’ULTIMA risposta dell’assistente
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
