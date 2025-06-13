@@ -3,14 +3,18 @@ from flask_cors import CORS
 import os
 import requests
 import time
+import base64
 
 app = Flask(__name__)
 CORS(app)
 
-# Recupera le chiavi dalle variabili d'ambiente di Render
+# Recupera le chiavi dalle environment variables
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID", "")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
 
+# --- CHAT ASSISTANT ENDPOINT ---
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -34,7 +38,7 @@ def chat():
     thread_id = thread_resp.json().get("id")
 
     # 2. Aggiungi messaggio utente
-    msg_resp = requests.post(
+    requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
         json={
@@ -79,10 +83,38 @@ def chat():
         if msg.get("role") == "assistant":
             content = msg.get("content", [])
             if content and isinstance(content, list):
-                response_text = content[0].get("text", "")
+                # Gestione caso OpenAI v2 (["text"]["value"])
+                if isinstance(content[0], dict):
+                    response_text = content[0].get("text", "")
+                    if isinstance(response_text, dict):
+                        response_text = response_text.get("value", "")
+                else:
+                    response_text = content[0]
             break
 
     return jsonify({"response": response_text})
+
+# --- ELEVENLABS TTS ENDPOINT ---
+@app.route("/speak", methods=["POST"])
+def speak():
+    data = request.json
+    text = data.get("message", "")
+    voice_id = ELEVENLABS_VOICE_ID
+    api_key = ELEVENLABS_API_KEY
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text,
+        "voice_settings": { "stability": 0.5, "similarity_boost": 0.5 }
+    }
+    resp = requests.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        return jsonify({"error": resp.text}), 500
+    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+    return jsonify({"audio": audio_b64})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
