@@ -52,7 +52,7 @@ def chat():
     run_id = run_resp.json().get("id")
 
     # 4. Attendi completamento della run (polling ogni 0.5s per max 30s)
-    for _ in range(60):  # 60 x 0.5s = 30s timeout
+    for _ in range(60):  # 60 × 0.5s = 30s timeout
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
@@ -64,7 +64,7 @@ def chat():
     else:
         return jsonify({"error": "Timeout"}), 500
 
-    # 5. Recupera messaggi
+    # 5. Recupera l’ULTIMA risposta dell’assistente
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
@@ -72,10 +72,10 @@ def chat():
     messages_resp.raise_for_status()
     messages = messages_resp.json().get("data", [])
 
-    # Ordina i messaggi in ordine cronologico inverso
+    # Ordina per sicurezza in ordine cronologico inverso
     messages = sorted(messages, key=lambda m: m.get("created_at", 0), reverse=True)
 
-    # 6. Cerca l’ultima risposta dell’assistente
+    # 6. Estrai risposta come stringa piatta (compatibile con Unity WebGL)
     response_text = ""
     for msg in messages:
         if msg.get("role") == "assistant":
@@ -88,6 +88,7 @@ def chat():
                     response_text += text
             break
 
+    # 7. Risposta finale compatibile Unity WebGL
     return jsonify({
         "response": response_text.strip(),
         "thread_id": thread_id
