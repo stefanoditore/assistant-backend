@@ -2,8 +2,10 @@ from flask import Flask, request, jsonify
 import time
 import requests
 import os
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID", "")
@@ -23,13 +25,13 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # 1. Crea nuovo thread se necessario
+    # Crea nuovo thread se necessario
     if not thread_id:
         thread_resp = requests.post("https://api.openai.com/v1/threads", headers=headers, json={})
         thread_resp.raise_for_status()
         thread_id = thread_resp.json().get("id")
 
-    # 2. Invia messaggio utente
+    # Aggiungi messaggio utente
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
@@ -37,7 +39,7 @@ def chat():
     )
     msg_resp.raise_for_status()
 
-    # 3. Avvia una run
+    # Avvia run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -51,8 +53,8 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # 4. Attendi completamento della run (polling ogni 0.5s per max 30s)
-    for _ in range(60):  # 60 × 0.5s = 30s timeout
+    # Poll fino al completamento (ogni 0.5s per max 30s)
+    for _ in range(60):
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
@@ -64,7 +66,7 @@ def chat():
     else:
         return jsonify({"error": "Timeout"}), 500
 
-    # 5. Recupera l’ULTIMA risposta dell’assistente
+    # Recupera ultima risposta assistant
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
@@ -72,10 +74,8 @@ def chat():
     messages_resp.raise_for_status()
     messages = messages_resp.json().get("data", [])
 
-    # Ordina per sicurezza in ordine cronologico inverso
     messages = sorted(messages, key=lambda m: m.get("created_at", 0), reverse=True)
 
-    # 6. Estrai risposta come stringa piatta (compatibile con Unity WebGL)
     response_text = ""
     for msg in messages:
         if msg.get("role") == "assistant":
@@ -88,7 +88,6 @@ def chat():
                     response_text += text
             break
 
-    # 7. Risposta finale compatibile Unity WebGL
     return jsonify({
         "response": response_text.strip(),
         "thread_id": thread_id
