@@ -3,6 +3,7 @@ import time
 import requests
 import os
 import base64
+import re
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -28,13 +29,11 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # Crea nuovo thread se necessario
     if not thread_id:
         thread_resp = requests.post("https://api.openai.com/v1/threads", headers=headers, json={})
         thread_resp.raise_for_status()
         thread_id = thread_resp.json().get("id")
 
-    # Aggiungi messaggio utente
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
@@ -42,7 +41,6 @@ def chat():
     )
     msg_resp.raise_for_status()
 
-    # Avvia run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -56,8 +54,8 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # Poll fino al completamento (max 30s)
-    for _ in range(60):
+    # ⏱️ Polling ottimizzato: ogni 0.25s fino a 30s
+    for _ in range(120):
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
@@ -65,11 +63,10 @@ def chat():
         status_resp.raise_for_status()
         if status_resp.json().get("status") == "completed":
             break
-        time.sleep(0.5)
+        time.sleep(0.25)
     else:
         return jsonify({"error": "Timeout"}), 500
 
-    # Recupera ultima risposta dell'assistente
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
@@ -95,37 +92,42 @@ def chat():
         "thread_id": thread_id
     })
 
-# ✅ Route audio ElevenLabs compatibile
+
 @app.route("/speak", methods=["POST"])
 def speak():
     data = request.json
-    text = data.get("message", "")
-    print(f"🗣️ Testo ricevuto per sintesi: {text[:80]}...")  # Mostra solo primi 80 caratteri
+    text = data.get("message", "").strip()
 
-    if not text or len(text.strip()) == 0:
+    if not text:
         return jsonify({"error": "Messaggio vuoto"}), 400
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}?output_format=pcm_44100"
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": text,
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.5
+    def split_into_sentences(text):
+        return [s.strip() for s in re.split(r'(?<=[.?!])\s+', text) if s.strip()]
+
+    sentences = split_into_sentences(text)
+    audio_data = bytearray()
+
+    for sentence in sentences:
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}?output_format=pcm_44100"
+        headers = {
+            "xi-api-key": ELEVENLABS_API_KEY,
+            "Content-Type": "application/json"
         }
-    }
+        payload = {
+            "text": sentence,
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.5
+            }
+        }
 
-    resp = requests.post(url, headers=headers, json=payload)
-    print(f"🔊 ElevenLabs status: {resp.status_code}")
+        resp = requests.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            return jsonify({"error": resp.text}), 500
 
-    if resp.status_code != 200:
-        print("❌ Errore ElevenLabs:", resp.text)
-        return jsonify({"error": resp.text}), 500
+        audio_data.extend(resp.content)
 
-    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+    audio_b64 = base64.b64encode(audio_data).decode("utf-8")
     return jsonify({ "audio": audio_b64 })
 
 if __name__ == "__main__":
