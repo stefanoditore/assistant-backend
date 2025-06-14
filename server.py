@@ -3,7 +3,6 @@ import time
 import requests
 import os
 import base64
-import re
 
 app = Flask(__name__)
 
@@ -11,9 +10,6 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID", "")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "")
-
-def split_into_sentences(text):
-    return re.split(r'(?<=[.!?]) +', text)
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -30,11 +26,13 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
+    # 1. Crea un thread solo se non esiste
     if not thread_id:
         thread_resp = requests.post("https://api.openai.com/v1/threads", headers=headers, json={})
         thread_resp.raise_for_status()
         thread_id = thread_resp.json().get("id")
 
+    # 2. Aggiungi messaggio utente
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
@@ -42,6 +40,7 @@ def chat():
     )
     msg_resp.raise_for_status()
 
+    # 3. Avvia la run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -55,7 +54,7 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # Poll fino a completamento
+    # 4. Attendi completamento run
     for _ in range(60):
         status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
@@ -68,6 +67,7 @@ def chat():
     else:
         return jsonify({"error": "Timeout"}), 500
 
+    # 5. Recupera risposta assistant
     messages_resp = requests.get(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
@@ -96,36 +96,27 @@ def chat():
 def speak():
     data = request.json
     text = data.get("message", "")
-    if not text:
-        return jsonify({"error": "Missing message"}), 400
-
     voice_id = ELEVENLABS_VOICE_ID
     api_key = ELEVENLABS_API_KEY
-    url_base = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_44100"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=pcm_44100"
     headers = {
         "xi-api-key": api_key,
         "Content-Type": "application/json"
     }
-
-    segments = split_into_sentences(text)
-    audio_chunks = []
-
-    for segment in segments:
-        if not segment.strip():
-            continue
-        payload = {
-            "text": segment.strip(),
-            "voice_settings": { "stability": 0.5, "similarity_boost": 0.5 }
+    payload = {
+        "text": text,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.5
         }
-        resp = requests.post(url_base, headers=headers, json=payload)
-        if resp.status_code != 200:
-            return jsonify({"error": resp.text}), 500
-        audio_chunks.append(resp.content)
+    }
 
-    # Unisce i chunk audio e li codifica in base64
-    full_audio = b"".join(audio_chunks)
-    audio_b64 = base64.b64encode(full_audio).decode("utf-8")
-    return jsonify({"audio": audio_b64})
+    resp = requests.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        return jsonify({"error": resp.text}), 500
+
+    audio_b64 = base64.b64encode(resp.content).decode("utf-8")
+    return jsonify({ "audio": audio_b64 })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
