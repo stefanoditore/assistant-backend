@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
+import time
 import requests
 import os
-import time
 
 app = Flask(__name__)
 
@@ -13,7 +13,7 @@ def chat():
     data = request.json
     user_message = data.get("message", "")
     system_message = data.get("system_message", "")
-    temperature = data.get("temperature", 0.7)
+    temperature = data.get("temperature", 0.4)
     top_p = data.get("top_p", 1.0)
     thread_id = data.get("thread_id")
 
@@ -23,21 +23,18 @@ def chat():
         "OpenAI-Beta": "assistants=v2"
     }
 
-    # 1. Crea thread se non presente
     if not thread_id:
-        thread_resp = requests.post("https://api.openai.com/v1/threads", headers=headers)
+        thread_resp = requests.post("https://api.openai.com/v1/threads", headers=headers, json={})
         thread_resp.raise_for_status()
         thread_id = thread_resp.json().get("id")
 
-    # 2. Aggiungi messaggio utente
     msg_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers,
-        json={"role": "user", "content": user_message}
+        json={ "role": "user", "content": user_message }
     )
     msg_resp.raise_for_status()
 
-    # 3. Avvia la run
     run_resp = requests.post(
         f"https://api.openai.com/v1/threads/{thread_id}/runs",
         headers=headers,
@@ -51,29 +48,44 @@ def chat():
     run_resp.raise_for_status()
     run_id = run_resp.json().get("id")
 
-    # 4. Attendi completamento run (polling)
+    # Poll fino a completamento
     for _ in range(60):
-        run_status_resp = requests.get(
+        status_resp = requests.get(
             f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
             headers=headers
         )
-        run_status_resp.raise_for_status()
-        status = run_status_resp.json().get("status")
-        if status == "completed":
+        status_resp.raise_for_status()
+        if status_resp.json().get("status") == "completed":
             break
         time.sleep(1)
     else:
-        return jsonify({"error": "Run timeout"}), 500
+        return jsonify({"error": "Timeout"}), 500
 
-    # 5. Recupera la risposta direttamente dal run
-    run_result_resp = requests.get(
-        f"https://api.openai.com/v1/threads/{thread_id}/runs/{run_id}",
+    # Recupera messaggi
+    messages_resp = requests.get(
+        f"https://api.openai.com/v1/threads/{thread_id}/messages",
         headers=headers
     )
-    run_result_resp.raise_for_status()
-    response_text = run_result_resp.json().get("last_response", {}).get("message", {}).get("content", "")
+    messages_resp.raise_for_status()
+    messages = messages_resp.json().get("data", [])
 
-    return jsonify({"response": response_text, "thread_id": thread_id})
+    # 🔎 Cerca l'ultima risposta dell'assistant
+    response_text = ""
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            parts = msg.get("content", [])
+            for part in parts:
+                if isinstance(part, dict):
+                    text = part.get("text", "")
+                    if isinstance(text, dict):
+                        text = text.get("value", "")
+                    response_text += text
+            break
+
+    return jsonify({
+        "response": response_text.strip(),
+        "thread_id": thread_id
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
