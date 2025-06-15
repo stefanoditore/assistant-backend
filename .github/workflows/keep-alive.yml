@@ -11,6 +11,6 @@ jobs:
     steps:
       - name: Ping Render server
         run: |
-          curl -X POST https://chat-assistant-openai.onrender.com/chat \
+          curl -X POST https://assistant-backend-4rw0.onrender.com/chat \
             -H "Content-Type: application/json" \
             -d '{"message": "ping", "system_message": "keep-alive", "temperature": 0.1, "top_p": 1.0}'
